@@ -31,14 +31,24 @@
 #include <cutils/sockets.h>
 #include <linux/capability.h>
 #include <linux/prctl.h>
-
+#include <sys/ioctl.h>
 #include <private/android_filesystem_config.h>
 #include "hardware/qemu_pipe.h"
 
 #define LIB_PATH_PROPERTY   "rild.libpath"
 #define LIB_ARGS_PROPERTY   "rild.libargs"
+#define MODEM_DEV_PATH	  "/dev/voice_modem"
 #define MAX_LIB_ARGS        16
+#define BP_IOCTL_BASE 0x1a
 
+#define BP_IOCTL_RESET 		_IOW(BP_IOCTL_BASE, 0x01, int)
+#define BP_IOCTL_POWOFF 	_IOW(BP_IOCTL_BASE, 0x02, int)
+#define BP_IOCTL_POWON 		_IOW(BP_IOCTL_BASE, 0x03, int)
+
+#define BP_IOCTL_WRITE_STATUS 	_IOW(BP_IOCTL_BASE, 0x04, int)
+#define BP_IOCTL_GET_STATUS 	_IOR(BP_IOCTL_BASE, 0x05, int)
+#define BP_IOCTL_SET_PVID 	_IOW(BP_IOCTL_BASE, 0x06, int)
+#define BP_IOCTL_GET_BPID 	_IOR(BP_IOCTL_BASE, 0x07, int)
 static void usage(const char *argv0)
 {
     fprintf(stderr, "Usage: %s -l <ril impl library> [-- <args for impl library>]\n", argv0);
@@ -96,7 +106,37 @@ void switchUser() {
     cap.inheritable = 0;
     capset(&header, &cap);
 }
-
+int getBpID(){
+	int bp_fd = -1;
+	int biID =-1;
+	int err = -1;
+	bp_fd = open(MODEM_DEV_PATH, O_RDWR);
+	if(bp_fd > 0){		
+		err = ioctl(bp_fd,BP_IOCTL_GET_BPID,&biID);
+		if(err < 0){
+			ALOGE("biID=%d getBpID failed  ioctrl err =%d bp_fd=%d",biID,err,bp_fd);
+			close(bp_fd);
+			return -1;
+		}else{
+			ALOGD("biID=%d getBpID sucessed",biID);
+			close(bp_fd);
+			return biID;
+		} 
+	}
+	ALOGE("biID=%d getBpID failed bp_fd = ",biID,bp_fd);
+	return -1;	
+}
+void startmux(int bp_id){
+	char *muxbin =NULL;
+	if(bp_id < 0){
+		ALOGE("bp_id=%d cann`t found mux bin to start",bp_id);
+	}else{
+		asprintf(&muxbin, "muxd%d",bp_id); 
+		property_set("ctl.start",muxbin); 
+		ALOGD("bp_id=%d found %s to start",bp_id,muxbin);
+		free(muxbin);
+	}
+}
 int main(int argc, char **argv)
 {
     const char * rilLibPath = NULL;
@@ -108,7 +148,8 @@ int main(int argc, char **argv)
     unsigned char hasLibArgs = 0;
 
     int i;
-
+	int bpID = -1;
+	char *rilLibPathTemp = NULL;
     umask(S_IRGRP | S_IWGRP | S_IXGRP | S_IROTH | S_IWOTH | S_IXOTH);
     for (i = 1; i < argc ;) {
         if (0 == strcmp(argv[i], "-l") && (argc - i > 1)) {
@@ -122,17 +163,47 @@ int main(int argc, char **argv)
             usage(argv[0]);
         }
     }
-
+	
+	char multiRild[10]= {0};
+    property_get("ro.multi.rild", multiRild, "false");
+	if(strcmp(multiRild, "true") != 0){
+		char dataonly[2];
+		property_get("ril.function.dataonly", dataonly, NULL);
+		if(strcmp(dataonly,"1") == 0 || strcmp(dataonly,"2") == 0 || strcmp(dataonly,"3") == 0){
+			strcpy(libPath,"libril-rk29-dataonly.so");
+			property_set("ril.function.dataonly","2");
+			rilLibPath = libPath;
+		}
+	}
     if (rilLibPath == NULL) {
-        if ( 0 == property_get(LIB_PATH_PROPERTY, libPath, NULL)) {
-            // No lib sepcified on the command line, and nothing set in props.
-            // Assume "no-ril" case.
-            goto done;
-        } else {
-            rilLibPath = libPath;
-        }
+	  bpID = getBpID();
+	  if(bpID < 0){
+		if ( 0 == property_get(LIB_PATH_PROPERTY, libPath, NULL)) {
+            	// No lib sepcified on the command line, and nothing set in props.
+            	// Assume "no-ril" case.
+            		rilLibPath = "/system/lib/libril-rk29-dataonly.so";
+					system("stop ril-daemon3");
+            		//goto done;
+        	} else {
+            		rilLibPath = libPath;
+        	}
+	  }else{	  	
+		asprintf(&rilLibPathTemp, "%s%d",LIB_PATH_PROPERTY,bpID); 
+		if ( 0 == property_get(rilLibPathTemp, libPath, NULL)) {
+            	// No lib sepcified on the command line, and nothing set in props.
+            	// Assume "no-ril" case.
+            		free(rilLibPathTemp);
+				    rilLibPath = "/system/lib/libril-rk29-dataonly.so";
+            		//goto done;
+        	} else {
+        		ALOGD("rilLibPathTemp=%s found %s to install",rilLibPathTemp,libPath);
+        		free(rilLibPathTemp);
+            		rilLibPath = libPath;
+        	}
+	  }
+        
     }
-
+    startmux(bpID);
     /* special override when in the emulator */
 #if 1
     {
@@ -240,8 +311,8 @@ int main(int argc, char **argv)
     }
 OpenLib:
 #endif
-    switchUser();
-
+   // switchUser();
+    ALOGD("Do not switch user to radio");
     dlHandle = dlopen(rilLibPath, RTLD_NOW);
 
     if (dlHandle == NULL) {
