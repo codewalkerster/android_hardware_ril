@@ -317,7 +317,7 @@ int main(int argc, char **argv) {
     }
 OpenLib:
 #endif
-    switchUser();
+    //switchUser();
 
     dlHandle = dlopen(rilLibPath, RTLD_NOW);
 
