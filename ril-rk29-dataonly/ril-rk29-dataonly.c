@@ -434,6 +434,7 @@ int g_fileid = -1;
 char g_smspath[64] = {0}; 
 
 static pthread_t s_tid_pppdState;
+static pthread_t s_tid_checkTtyState;
 static pthread_mutex_t s_waitmutex = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t s_waitcond = PTHREAD_COND_INITIALIZER;
 static int s_pppd_exception = 0;
@@ -461,7 +462,17 @@ extern int dhcp_get_results(const char *interface,
 extern int dhcp_start(const char *interface);
 extern int dhcp_stop(const char *interface);	
 */
-#if 0
+#if 1
+int setTimer(int seconds, int mseconds)
+{
+        struct timeval temp;
+        temp.tv_sec = seconds;
+        temp.tv_usec = mseconds;
+
+	select(0, NULL, NULL, NULL, &temp);
+        return 1;
+}
+
 static void *pppdStateLoop(void *param)
 {
    // char value[64] = "";
@@ -472,7 +483,8 @@ static void *pppdStateLoop(void *param)
    // char dns2[64]="";
     s_pppd_exception = 0;
     LOGD("[%s]: begin pppd state monitor", __FUNCTION__);
-    while( ETIMEDOUT==pthread_cond_timeout_np(&s_waitcond, &s_waitmutex, 3000) )
+    //while( ETIMEDOUT==pthread_cond_timeout_np(&s_waitcond, &s_waitmutex, 3000) )
+    while(1 == setTimer(3,0))
     {
         property_get("net.gprs.ppp-exit", value, "");
         if(value[0])
@@ -510,7 +522,19 @@ static void *pppdStateLoop(void *param)
     return 0;
 }
 #endif
-/*
+static void *checkTtyStateLoop(void *param)
+{
+	while(1 == setTimer(6,0)){
+	if( access(s_current_modem->atchannel_index, 0) == 0 ){
+		LOGD("TTY IS OK\n");
+	}else{
+		LOGD("TTY EXIT\n");
+		kill_rild();
+		}
+	}
+	return 0;
+}
+/*:
      1   support
      0   unsupport
  */
@@ -2891,7 +2915,7 @@ static int kill_pppd(int second)
  char *p_pid = NULL;
  FILE *pFile = NULL;
  int  pid = 0;
- sprintf(cmd, "ps %s", name);
+ sprintf(cmd, "ps | grep %s", name);
  pFile = popen(cmd, "r");
 if (pFile != NULL)  {
      while (fgets(szBuf, sizeof(szBuf), pFile))          {
@@ -3459,7 +3483,7 @@ static void requestSetupDataCall(void *data, size_t datalen, RIL_Token t)
 	LOGD("[%s]: local-gw=%s", __FUNCTION__, ip_gw);
 
     // 新建进程，用于监视pppd的运行状况
-#if 0
+#if 1
     LOGD("create thread for pppd state!");
     if( pthread_create(&s_tid_pppdState, NULL, pppdStateLoop, NULL) )
     {
@@ -6222,6 +6246,10 @@ static void *mainLoop(void *param)
            RLOGE ("AT error %d on at_open\n", ret);
             return 0;
         }
+        if( pthread_create(&s_tid_checkTtyState, NULL, checkTtyStateLoop, NULL) )
+	{
+	      LOGD("s_tid_pppdState:thread create failed!\n");
+	}
         RIL_requestTimedCallback(initializeCallback, NULL, &TIMEVAL_0);
         // Give initializeCallback a chance to dispatched, since
         // we don't presently have a cancellation mechanism
